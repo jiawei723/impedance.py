@@ -5,6 +5,7 @@ import numpy as np
 from numpy import log10, absolute, angle
 import matplotlib.pyplot as plt
 from impedance.models.circuits import Randles, CustomCircuit
+# import impedance.models.circuits as circuits
 from impedance import preprocessing
 from impedance.visualization import plot_nyquist
 
@@ -29,7 +30,7 @@ def app_gui():
 
     if Z is not None:
         # choose circuit model type
-        model_type_options = ["Randles", "Custom"]
+        model_type_options = ["Randles", "Custom", "Load Model"]
         model_type = st.selectbox("Model Type", model_type_options)
 
         if model_type == "Randles":
@@ -68,6 +69,35 @@ def app_gui():
 
             circuit = CustomCircuit(initial_guess=initial_guess, circuit=circuit_options, constants=const_input)
         
+        elif model_type == "Load Model":
+            # Load a model from a JSON file
+            st.write("Load a model from a JSON file")
+            uploaded_model = st.file_uploader("Choose a JSON model file", type=["json"])
+            if uploaded_model is not None:
+                file_path = uploaded_model.name
+                model_data = json.load(uploaded_model)
+                with open(f"{file_path}", "w") as f:
+                    json.dump(model_data, f)
+
+                load_model_type = st.selectbox("Model Type", ["Custom", "Randles", "Randles w/ CPE"])
+                fitted_as_initial = st.checkbox("Use fitted parameters as initial guess")
+
+                if load_model_type == "Custom":
+                    circuit = CustomCircuit()
+                    model_label = f'Load Custom Circuit - {model_data["Name"]}'
+                elif load_model_type == "Randles":
+                    circuit = Randles()
+                    model_label = 'Load-Randles'
+                elif load_model_type == "Randles w/ CPE":
+                    circuit = Randles(CPE=True)
+                    model_label = 'Load-Randles w/ CPE'
+                
+                circuit.load(file_path, fitted_as_initial=fitted_as_initial)
+            else:
+                st.write("Please upload a JSON model file to continue.")
+                circuit = None
+
+
         st.write("Check the circuit model below")
         st.text(str(circuit))
             
@@ -82,10 +112,12 @@ def app_gui():
             st.session_state.circuit_fit = None
 
         # fit the model
-        if st.button("Fit Model"):
+        if st.button("Fit Model") or st.session_state.model_fitted:
             circuit.fit(frequencies, Z)
             st.write("Check the Fit circuit model below")
             st.text(str(circuit))
+            st.session_state.model_fitted = True
+            st.session_state.circuit = circuit
 
             # plot the data and the model
             f_pred = np.logspace(5,-2)
@@ -97,33 +129,37 @@ def app_gui():
             st.pyplot(fig)
             fig.savefig('EIS.png')
 
-            if st.button("Export Model"):
-                export_filename = st.text_input("Enter filename for model export", value="template_model.json")
-                
+            st.session_state.f_pred = f_pred
+            st.session_state.circuit_fit = circuit_fit
+
+        if st.session_state.model_fitted:
+            @st.cache_data
+            def export_model():
                 # Convert the circuit object to a JSON string
-                model_string = circuit.circuit
-                model_name = circuit.name
-                initial_guess = circuit.initial_guess
-                if circuit._is_fit():
-                    parameters_ = list(circuit.parameters_)
-                    model_conf_ = list(circuit.conf_)
+                model_string = st.session_state.circuit.circuit
+                model_name = st.session_state.circuit.name
+                initial_guess = st.session_state.circuit.initial_guess
+                if st.session_state.circuit._is_fit():
+                    parameters_ = list(st.session_state.circuit.parameters_)
+                    model_conf_ = list(st.session_state.circuit.conf_)
                     data_dict = {"Name": model_name,
                                 "Circuit String": model_string,
                                 "Initial Guess": initial_guess,
-                                "Constants": circuit.constants,
+                                "Constants": st.session_state.circuit.constants,
                                 "Fit": True,
                                 "Parameters": parameters_,
-                                "Confidence": model_conf_,
-                                }
+                                "Confidence": model_conf_}
                 else:
                     data_dict = {"Name": model_name,
                                 "Circuit String": model_string,
                                 "Initial Guess": initial_guess,
-                                "Constants": circuit.constants,
+                                "Constants": st.session_state.circuit.constants,
                                 "Fit": False}
-                json_data = json.dumps(data_dict)
-                
-                # Create the download button
+                return json.dumps(data_dict)
+
+            if st.button("Export Model"):
+                export_filename = st.text_input("Enter filename for model export", value="template_model.json")
+                json_data = export_model()
                 st.download_button(
                     label="Download Model",
                     data=json_data,
@@ -131,15 +167,21 @@ def app_gui():
                     mime="application/json"
                 )
                 # st.success("Model exported successfully.")
+
             if st.button("Export Figure"):
                 export_filename = st.text_input("Enter filename for figure export", value="figure.png")
                 with open('EIS.png', "rb") as f1:
                     st.download_button(label=f"Download Figure", data=f1.read(), file_name=export_filename, mime="image/png")
                 # st.success(f"Figure exported to {export_filename}")
+
+            @st.cache_data
+            def export_fit_data():
+                df = pd.DataFrame(np.column_stack((st.session_state.f_pred, st.session_state.circuit_fit.real, st.session_state.circuit_fit.imag)), columns=["freq", "Z_re", "Z_im"])
+                return df.to_csv().encode('utf-8')
+
             if st.button("Export Fit EIS Data"):
                 export_filename = st.text_input("Enter filename for fit EIS data export", value="fit_data.csv")
-                df = pd.DataFrame(np.column_stack((f_pred, circuit_fit.real, circuit_fit.imag)), columns=["freq", "Z_re", "Z_im"])
-                csv = df.to_csv().encode('utf-8')
+                csv = export_fit_data()
                 st.download_button(label="Download Fit EIS Data", data=csv, file_name=export_filename, mime="text/csv")
                 # st.success(f"Fit data exported to {export_filename}")
     else:
